@@ -62,7 +62,7 @@ pub use pipeline::Pipeline;
 pub use view::*;
 
 use std::collections::hash_map::DefaultHasher;
-use std::collections::HashSet;
+use std::collections::BTreeMap;
 use std::hash::{Hash, Hasher};
 
 use opentelemetry::{Key, KeyValue, Value};
@@ -76,38 +76,22 @@ pub(crate) struct AttributeSet(Vec<KeyValue>, u64);
 
 impl From<&[KeyValue]> for AttributeSet {
     fn from(values: &[KeyValue]) -> Self {
-        let mut seen_keys = HashSet::with_capacity(values.len());
-        let vec = values
-            .iter()
-            .rev()
-            .filter_map(|kv| {
-                if seen_keys.insert(kv.key.clone()) {
-                    Some(kv.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        AttributeSet::new(vec)
+        let mut btree = BTreeMap::new();
+        for kv in values.iter().rev() {
+            btree.entry(&kv.key).or_insert(&kv.value);
+        }
+        let mut hasher = DefaultHasher::new();
+        let vec = btree
+            .into_iter()
+            .map(|(key, value)| KeyValue::new(key.clone(), value.clone()))
+            .inspect(|kv| kv.hash(&mut hasher))
+            .collect();
+        let hash = hasher.finish();
+        AttributeSet(vec, hash)
     }
-}
-
-fn calculate_hash(values: &[KeyValue]) -> u64 {
-    let mut hasher = DefaultHasher::new();
-    values.iter().fold(&mut hasher, |mut hasher, item| {
-        item.hash(&mut hasher);
-        hasher
-    });
-    hasher.finish()
 }
 
 impl AttributeSet {
-    fn new(mut values: Vec<KeyValue>) -> Self {
-        values.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-        let hash = calculate_hash(&values);
-        AttributeSet(values, hash)
-    }
 
     /// Iterate over key value pairs in the set
     pub(crate) fn iter(&self) -> impl Iterator<Item = (&Key, &Value)> {
